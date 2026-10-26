@@ -1,4 +1,4 @@
-const V='brd6-v1',FILES=['v6.html','manifest6.json','icon6-192.png','icon6-512.png'];
+const V='brd6-v3',FILES=['v6.html','manifest6.json','icon6-192.png','icon6-512.png'];
 self.addEventListener('install',e=>{e.waitUntil(caches.open(V).then(async c=>{await c.addAll(FILES);try{await c.add('my-glossary.txt')}catch(x){}}).then(()=>self.skipWaiting()))});
 self.addEventListener('activate',e=>{e.waitUntil(caches.keys().then(ks=>Promise.all(ks.filter(k=>k!==V&&k.startsWith('brd6-')).map(k=>caches.delete(k)))).then(()=>self.clients.claim()))});
 self.addEventListener('fetch',e=>{
