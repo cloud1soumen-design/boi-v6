@@ -1646,19 +1646,21 @@ $('#bAuto').onclick=()=>{
 $('#bAuto').textContent='⇄ অনুবাদ '+(auto?'চালু':'বন্ধ');
 $('#bTerm').onclick=()=>run(()=>termList(paras.join('\n').slice(0,8000)));
 const NOADD='IMPORTANT: Translate each paragraph exactly the way it is written, keeping its own structure and line breaks. Do NOT add anything of your own: no numbering (1 2 3), no bullet points, no headings, no summary, no notes, no explanations, no terms list, no extra lines before or after. The only extra text allowed is the [n] marker at the start of each paragraph, exactly as given.';
+const NOADD1='IMPORTANT: Translate the paragraph exactly the way it is written, keeping its own structure and line breaks. Do NOT add anything of your own: no numbering (1 2 3), no bullet points, no headings, no summary, no notes, no explanations, no terms list, no extra lines before or after, no marker. Write only the Bangla translation of this one paragraph.';
 let chatFlat=[];
 function chatPrompt(idx){
  // ChatGPT-র জন্য সংকেত (⟦G0⟧) নয়: সাধারণ মূল লেখা + শব্দকোষের শব্দের আলাদা তালিকা
  const pr=idx.map(k=>({t:paras[k],toks:[]}));
+ const one=idx.length===1,mk=(k,j)=>one?pr[j].t:'['+(k+1)+'] '+pr[j].t,NA=one?NOADD1:NOADD;
  chatFlat=[];
  const T=termTable(idx.map(k=>paras[k]));
  const TT=(T.map.length?' Use exactly these Bangla renderings for these terms: '+T.map.join('; ')+'.':'')+(T.keep.length?' Keep these terms in English as written: '+T.keep.join(', ')+'.':'')+(T.sug.length?' Suggested renderings (use them if they fit the context): '+T.sug.join('; ')+'.':'');
  if(ls.get('gshort')!=='0'){
-  return 'Translate these book paragraphs into Bangla ('+(reg==='wb'?'West Bengal, Kolkata style':'standard')+'), faithful to the meaning, fluent and natural.'+((ls.get('custs')===null?DEF_CUSTS:ls.get('custs')).trim()?' '+(ls.get('custs')===null?DEF_CUSTS:ls.get('custs')).trim():'')+(noEn?' Technical terms: Bangla script with the English in brackets on first use.':'')+TT+' Reply with only the translations, each starting with its marker exactly as given (e.g. [12]). '+NOADD+'\n\n'+idx.map((k,j)=>'['+(k+1)+'] '+pr[j].t).join('\n\n');
+  return 'Translate these book paragraphs into Bangla ('+(reg==='wb'?'West Bengal, Kolkata style':'standard')+'), faithful to the meaning, fluent and natural.'+((ls.get('custs')===null?DEF_CUSTS:ls.get('custs')).trim()?' '+(ls.get('custs')===null?DEF_CUSTS:ls.get('custs')).trim():'')+(noEn?' Technical terms: Bangla script with the English in brackets on first use.':'')+TT+(one?' Reply with only the Bangla translation of this one paragraph. ':' Reply with only the translations, each starting with its marker exactly as given (e.g. [12]). ')+NA+'\n\n'+idx.map(mk).join('\n\n')+'\n\n'+NA;
  }
  const g=gprompt(pr.map(x=>x.t),true);
  const head=g.slice(0,g.indexOf('\nOUTPUT:'))+g.slice(g.indexOf('\u0001')+1,g.indexOf('\nPARAGRAPHS (JSON array'));
- return head+'\nOUTPUT FORMAT: plain text only (no JSON, no markdown). For every paragraph write its marker exactly as given, e.g. [12], then its Bangla translation. Keep the order; never skip or merge paragraphs. '+NOADD+'\n\nPARAGRAPHS:\n'+idx.map((k,j)=>'['+(k+1)+'] '+pr[j].t).join('\n\n');
+ return head+'\nOUTPUT FORMAT: plain text only (no JSON, no markdown). '+(one?'Write only the Bangla translation of this one paragraph. ':'For every paragraph write its marker exactly as given, e.g. [12], then its Bangla translation. Keep the order; never skip or merge paragraphs. ')+NA+'\n\nPARAGRAPHS:\n'+idx.map(mk).join('\n\n')+'\n\n'+NA;
 }
 let gptJob=null;
 function gbarMode(m,t){
@@ -1786,7 +1788,22 @@ function parseItems(body,job){
  const items=marks.map((mk,k)=>({idx:mk.n-1,t:clean(body.slice(mk.e,k+1<marks.length?marks[k+1].i:body.length))}));
  const valid=items.filter(x=>job.idx.includes(x.idx));
  if(valid.length)return {list:valid,found:marks.length};
- if(job.idx.length===1)return {list:[{idx:job.idx[0],t:clean(body)}],found:marks.length};
+ if(job.idx.length===1){
+  let b1=body.replace(/^\s*[\[【]\s*\**\s*[0-9০-৯]+\s*\**\s*[\]】]\s*/,'');
+  const o1=(job.snap&&job.snap[job.idx[0]])||'';
+  if(!/^\s*[0-9০-৯]+\s*[.)]/.test(o1))b1=b1.replace(/^\s*\**\s*[0-9০-৯]+\s*[.)]\s*\**\s*/,'');
+  return {list:[{idx:job.idx[0],t:clean(b1)}],found:marks.length};
+ }
+ {
+  const re2=/^[ \t>*#-]*\**\s*([0-9০-৯]+)\s*[.)]\s*\**[ \t]*/gm,m2=[];let q;
+  while((q=re2.exec(body)))m2.push({n:+D2A(q[1]),i:q.index,e:re2.lastIndex});
+  if(m2.length>=2){
+   const it2=m2.map((mk,k)=>({n:mk.n,t:clean(body.slice(mk.e,k+1<m2.length?m2[k+1].i:body.length))}));
+   const byNum=it2.filter(x=>job.idx.includes(x.n-1)).map(x=>({idx:x.n-1,t:x.t}));
+   if(byNum.length===it2.length&&byNum.length>=Math.min(2,job.idx.length))return {list:byNum,found:marks.length};
+   if(it2.length===job.idx.length)return {list:it2.map((x,k)=>({idx:job.idx[k],t:x.t})),found:marks.length};
+  }
+ }
  const blocks=body.split(/\n\s*\n/).map(x=>clean(x.replace(/^\s*(?:\*\*)?[0-9০-৯]+[.)]\s*/,''))).filter(Boolean);
  if(blocks.length===job.idx.length)return {list:blocks.map((t,k)=>({idx:job.idx[k],t})),found:marks.length};
  return {list:[],found:marks.length,blocks:blocks.length};
@@ -1807,10 +1824,10 @@ function applyGpt(txt,auto){
  const body=cutAt!==undefined?txt.slice(0,cutAt):txt;
  const termsT=iT>=0?txt.slice(iT,iP>iT?iP:undefined).replace(/^[^:]*:/,''):'';
  const profT=iP>=0?txt.slice(iP,iT>iP?iT:undefined).replace(/^[^:]*:/,'').replace(/[*]+/g,'').trim():'';
- const pi=parseItems(body,gptJob);let ok=0;const saved=[];
+ const pi=parseItems(body,gptJob);let ok=0;const saved=[],lkP=[];
  pi.list.forEach(({idx,t})=>{
   const tt=t?restoreLoose(t,gptJob.flat||[]):t;
-  if(tt&&gptJob.snap[idx]!==undefined&&(force||(bn(tt)>0&&bn(tt)>=lat(tt)*0.3))){pset('mp:'+hk(gptJob.snap[idx]),tt);saved.push(tt);ok++}
+  if(tt&&gptJob.snap[idx]!==undefined&&(force||(bn(tt)>0&&bn(tt)>=lat(tt)*0.3))){{const hh=hk(gptJob.snap[idx]);pset('mp:'+hh,tt);lkP.push(pget('lk:'+hh).then(l=>{if(l&&l.t&&!l.mine)pset('lk:'+hh,null)}).catch(()=>{}))}saved.push(tt);ok++}
  });
  if(ok){
   if(gptJob.key!=null&&gptJob.pos!=null)plDelete(gptJob.key,gptJob.pos);
@@ -1824,7 +1841,10 @@ function applyGpt(txt,auto){
   glRe=null;if(key)kvSet('bc:'+key,bookCtx);
  }
  if(!ok){
-  const raw=restoreLoose(body.trim(),gptJob.flat||[]);
+  const raw0=restoreLoose(body.trim(),gptJob.flat||[]);
+  const nl0=[...raw0.matchAll(/^[ \t>*#-]*\**\s*([0-9০-৯]+)\s*[.)]\s*\**[ \t]*/gm)].map(x=>+D2A(x[1]));
+  const seq0=nl0.length>=2&&nl0.every((v,i)=>v===nl0[0]+i);
+  const raw=(seq0?raw0.replace(/^[ \t>*#-]*\**\s*[0-9০-৯]+\s*[.)]\s*\**[ \t]*/gm,''):raw0).replace(/^[ \t>*#-]*\**\s*[\[【]\s*\**\s*[0-9০-৯]+\s*\**\s*[\]】][ \t*]*/gm,'');
   if(raw.trim()&&gptJob.key&&(force||(raw.length>=20&&bn(raw)>0&&bn(raw)>=lat(raw)*0.3))){
    pset('pgmp:'+gptJob.key+':'+gptJob.pos,raw);
    const same=gptJob.key===key&&gptJob.pos===pos;
@@ -1838,7 +1858,7 @@ function applyGpt(txt,auto){
  }
  gptJob=null;gbar(false);sheet.style.display='none';
  toast('✅ ChatGPT-র '+ok+'টি অনুবাদ সেভ হয়েছে। বাকি থাকলে 💬 আবার চাপুন',5000);
- if(book)translateAll();
+ Promise.all(lkP).then(()=>{if(book)translateAll()});
  return true;
 }
 async function tryClip(auto){
@@ -1894,7 +1914,8 @@ $('#selbtn').onclick=async()=>{
  toast(pre?'ChatGPT খুলছে, প্রশ্ন বসানো থাকবে। উত্তর কপি করে ফিরে আসুন।':(copied?'প্রশ্ন কপি হয়েছে। ChatGPT-তে পেস্ট করে পাঠান।':'অটো কপি হয়নি'),6000);
 };
 $('#gx').onclick=()=>{gptJob=null;gbar(false)};
-const clipAuto=()=>{if(document.visibilityState==='visible'&&gptJob){tryClip(true);setTimeout(()=>{if(gptJob)tryClip(true)},900)}};
+const clipAuto=()=>{if(document.visibilityState==='visible'&&gptJob){tryClip(true);[900,2200,4500].forEach(ms=>setTimeout(()=>{if(gptJob)tryClip(true)},ms))}};
+let lastTap=0;document.addEventListener('pointerdown',()=>{if(gptJob&&Date.now()-lastTap>2500){lastTap=Date.now();tryClip(true)}},{passive:true,capture:true});
 document.addEventListener('visibilitychange',clipAuto);
 addEventListener('focus',()=>{if(gptJob)tryClip(true)});
 $('#bGpt').onclick=async()=>{
