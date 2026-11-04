@@ -1141,7 +1141,7 @@ let LM=JSON.parse(JSON.stringify(LMD));
 try{const s=JSON.parse(ls.get('lm')||'null');if(s)for(const k in s)Object.assign(LM[k]||(LM[k]={}),s[k])}catch(e){}
 const saveLM=()=>ls.set('lm',JSON.stringify(LM));
 let LC={};try{LC=JSON.parse(ls.get('lmc')||'{}')}catch(e){}
-let LMON=ls.get('lmon')==='1',forceNow=false;
+let LMON=ls.get('lmon')==='1',LMSP=ls.get('lmsp')==='1',forceNow=false;
 const lmLogs={gem:[],gro:[]};let fgPend=0,lastAhTxt='',curChars=0;
 const ptFmt=new Intl.DateTimeFormat('en-CA',{timeZone:'America/Los_Angeles'});
 const dayKeyAt=(r,d)=>r==='pt'?ptFmt.format(d):d.toISOString().slice(0,10);
@@ -1174,13 +1174,14 @@ function curProv(){
  return 'gem';
 }
 // প্রথম পছন্দ Gemini; সীমা ভরে গেলে বা ব্যর্থ হলে Groq; অপেক্ষা কম রেখে ভাগ করে দেয়
-async function llm(p,t,prio){
+async function llm(p,t,prio,pref){
  prio=prio||0;
  const mainOk=aiKey()&&(forceNow||Date.now()>=qUntil),secOk=sec2()&&(forceNow||Date.now()>=qUntil2);
  if(!mainOk&&!secOk){const e=new Error('quota');e.status=429;throw e}
  let order=[];
  if(mainOk)order.push(gp==='gemini'?'gem':'main');
  if(secOk)order.push('gro');
+  if(LMSP&&pref==='easy'&&order.length>1)order.reverse();
  const est=estTok(p),t0=Date.now(),maxWait=prio===0?20000:prio===1?120000:600000;
  if(prio===0)fgPend++;
  try{
@@ -1295,11 +1296,21 @@ function restoreAI(t,toks){
 }
 function restoreLoose(t,toks){return t.replace(/⟦\s*G(\d+)\s*⟧/g,(m,i)=>toks&&toks[+i]?toks[+i].txt:'')}
 const inPara=(en,para)=>{const p=para.toLowerCase(),e=String(en).toLowerCase().trim();if(!e)return false;if(p.includes(e))return true;const ws=(e.match(/[a-z][a-z'’-]*/g)||[]).filter(w=>!STOP.has(w));return ws.length>0&&ws.every(w=>p.includes(stemE(w)))};
-async function callBatch(list,orig,prio){
+async function callBatch(list,orig,prio,pref){
  orig=orig||list;
+ if(LMSP&&!pref&&aiKey()&&sec2()&&(forceNow||(Date.now()>=qUntil&&Date.now()>=qUntil2))){
+  const H=[],E=[];list.forEach((p,k)=>(hardScore(String(p),'')>=1?H:E).push(k));
+  if(H.length&&E.length){
+   const run=(ix,pf)=>callBatch(ix.map(k=>list[k]),ix.map(k=>orig[k]),prio,pf);
+   const [rh,re]=await Promise.all([run(H,'hard'),run(E,'easy')]);
+   const o=new Array(list.length).fill(null);H.forEach((k,j)=>{o[k]=rh[j]});E.forEach((k,j)=>{o[k]=re[j]});
+   return o;
+  }
+  pref=H.length?'hard':'easy';
+ }
  let lastErr=null;
  for(let t=0;t<2;t++){
-  const res=await llm(gprompt(list),undefined,prio);
+  const res=await llm(gprompt(list),undefined,prio,pref);
   const arr=Array.isArray(res)?res:(res&&res.translations);
   const o=new Array(list.length).fill(null);
   if(Array.isArray(arr))arr.forEach((x,k)=>{
@@ -1645,19 +1656,23 @@ $('#bAuto').onclick=()=>{
 };
 $('#bAuto').textContent='⇄ অনুবাদ '+(auto?'চালু':'বন্ধ');
 $('#bTerm').onclick=()=>run(()=>termList(paras.join('\n').slice(0,8000)));
+const NOADD='IMPORTANT: Translate each paragraph exactly the way it is written, keeping its own structure and line breaks. Do NOT add anything of your own: no numbering (1 2 3), no bullet points, no headings, no summary, no notes, no explanations, no terms list, no extra lines before or after. The only extra text allowed is the [n] marker at the start of each paragraph, exactly as given.';
+const NOADD1='IMPORTANT: Translate the paragraph exactly the way it is written, keeping its own structure and line breaks. Do NOT add anything of your own: no numbering (1 2 3), no bullet points, no headings, no summary, no notes, no explanations, no terms list, no extra lines before or after, no marker. Write only the Bangla translation of this one paragraph.';
+const NOADDN=n=>'IMPORTANT: Reply with ONLY the Bangla translation: exactly '+n+' paragraph(s), in the same order and in the same layout as the source, separated by one blank line. Do not add numbers (1 2 3), markers, bullet points, headings, notes, explanations, a terms list or anything of your own, and never merge or split paragraphs.';
 let chatFlat=[];
 function chatPrompt(idx){
  // ChatGPT-র জন্য সংকেত (⟦G0⟧) নয়: সাধারণ মূল লেখা + শব্দকোষের শব্দের আলাদা তালিকা
  const pr=idx.map(k=>({t:paras[k],toks:[]}));
+ const mk=(k,j)=>pr[j].t,NA=NOADDN(idx.length);
  chatFlat=[];
  const T=termTable(idx.map(k=>paras[k]));
  const TT=(T.map.length?' Use exactly these Bangla renderings for these terms: '+T.map.join('; ')+'.':'')+(T.keep.length?' Keep these terms in English as written: '+T.keep.join(', ')+'.':'')+(T.sug.length?' Suggested renderings (use them if they fit the context): '+T.sug.join('; ')+'.':'');
  if(ls.get('gshort')!=='0'){
-  return 'Translate these book paragraphs into Bangla ('+(reg==='wb'?'West Bengal, Kolkata style':'standard')+'), faithful to the meaning, fluent and natural.'+((ls.get('custs')===null?DEF_CUSTS:ls.get('custs')).trim()?' '+(ls.get('custs')===null?DEF_CUSTS:ls.get('custs')).trim():'')+(noEn?' Technical terms: Bangla script with the English in brackets on first use.':'')+TT+' Reply with only the translations, each starting with its marker exactly as given (e.g. [12]). After the last paragraph add a line "TERMS:" then up to 10 key technical terms from this text, one per line as "english = Bangla word you used (or KEEP_EN)"'+(bookCtx.profile?'':' and a final line "PROFILE:" with 2 sentences on the book\'s subject and tone')+'.\n\n'+idx.map((k,j)=>'['+(k+1)+'] '+pr[j].t).join('\n\n');
+  return 'Translate these book paragraphs into Bangla ('+(reg==='wb'?'West Bengal, Kolkata style':'standard')+'), faithful to the meaning, fluent and natural.'+((ls.get('custs')===null?DEF_CUSTS:ls.get('custs')).trim()?' '+(ls.get('custs')===null?DEF_CUSTS:ls.get('custs')).trim():'')+(noEn?' Technical terms: Bangla script with the English in brackets on first use.':'')+TT+' '+NA+'\n\n'+idx.map(mk).join('\n\n')+'\n\n'+NA;
  }
  const g=gprompt(pr.map(x=>x.t),true);
  const head=g.slice(0,g.indexOf('\nOUTPUT:'))+g.slice(g.indexOf('\u0001')+1,g.indexOf('\nPARAGRAPHS (JSON array'));
- return head+'\nOUTPUT FORMAT: plain text only (no JSON, no markdown). For every paragraph write its marker exactly as given, e.g. [12], then its Bangla translation. Keep the order; never skip or merge paragraphs. After the last paragraph add a line "TERMS:" followed by up to 15 important technical terms from this input that are NOT in the lists above, one per line as "english term = Bangla word you used (or KEEP_EN)"'+(bookCtx.profile?'':'. Then a final line "PROFILE:" followed by 2-3 sentences describing the book\'s subject, tone and likely audience')+'.\n\nPARAGRAPHS:\n'+idx.map((k,j)=>'['+(k+1)+'] '+pr[j].t).join('\n\n');
+ return head+'\nOUTPUT FORMAT: plain text only (no JSON, no markdown). '+NA+'\n\nPARAGRAPHS:\n'+idx.map(mk).join('\n\n')+'\n\n'+NA;
 }
 let gptJob=null;
 function gbarMode(m,t){
@@ -1678,13 +1693,14 @@ async function suggestGpt(){
  gbarMode('suggest','AI-র উন্নতি আসেনি। '+(g.hard?'কঠিন '+g.idx.length+'টি অংশ':'এই পাতার '+g.idx.length+'টি অনুচ্ছেদ')+' ChatGPT-তে পাঠাবেন?');
 }
 $('#gsend').onclick=()=>$('#bGpt').click();
-async function nextGroup(){
+async function nextGroup(all){
  const blks=[...view.querySelectorAll('.blk')];
  const todo=[];
  for(let k=0;k<paras.length;k++){if(await pget('mp:'+hk(paras[k]))==null)todo.push(k)}
  if(!todo.length)return null;
  const hard=hardSel(todo.map(k=>({k,s:hardScore(paras[k],blks[k]&&blks[k]._h)})),hyPct).map(x=>x.k).sort((a,b)=>a-b);
  const pg=(ls.get('gscope')||'page')==='page';
+ if(pg)return {idx:all?paras.map((_,k)=>k):todo,hard:false};
  const arr=pg?todo:(hard.length?hard:todo),pick=[],cap=(ls.get('gshort')!=='0')?2400:(pg?6000:3500);let n=0;
  for(const k of arr){const l=paras[k].length;if(pick.length&&n+l>cap)break;pick.push(k);n+=l}
  return {idx:pick,hard:!pg&&!!hard.length};
@@ -1778,15 +1794,33 @@ function showAsk(job,txt){
 }
 const D2A=x=>x.replace(/[০-৯]/g,c=>'০১২৩৪৫৬৭৮৯'.indexOf(c));
 function parseItems(body,job){
- const re=/[\[【]\s*\**\s*([0-9০-৯]+)\s*\**\s*[\]】]/g,marks=[];let m;
+ const re=/^[ \t>*#-]*\**\s*\\?[\[【]\s*\**\s*([0-9০-৯]+)\s*\**\s*\\?[\]】]/gm,marks=[];let m;
  while((m=re.exec(body)))marks.push({n:+D2A(m[1]),i:m.index,e:re.lastIndex});
  const clean=t=>t.replace(/^[\s*:：.\-]+|[\s*]+$/g,'');
  const items=marks.map((mk,k)=>({idx:mk.n-1,t:clean(body.slice(mk.e,k+1<marks.length?marks[k+1].i:body.length))}));
  const valid=items.filter(x=>job.idx.includes(x.idx));
  if(valid.length)return {list:valid,found:marks.length};
- if(job.idx.length===1)return {list:[{idx:job.idx[0],t:clean(body)}],found:marks.length};
- const blocks=body.split(/\n\s*\n/).map(x=>clean(x.replace(/^\s*(?:\*\*)?[0-9০-৯]+[.)]\s*/,''))).filter(Boolean);
+ if(job.idx.length===1){
+  let b1=body.replace(/^\s*\\?[\[【]\s*\**\s*[0-9০-৯]+\s*\**\s*\\?[\]】]\s*/,'');
+  const o1=(job.snap&&job.snap[job.idx[0]])||'';
+  if(!/^\s*[0-9০-৯]+\s*[.)]/.test(o1))b1=b1.replace(/^\s*\**\s*[0-9০-৯]+\s*[.)]\s*\**\s*/,'');
+  return {list:[{idx:job.idx[0],t:clean(b1)}],found:marks.length};
+ }
+ {
+  const re2=/^[ \t>*#-]*\**\s*([0-9০-৯]+)\s*[.)]\s*\**[ \t]*/gm,m2=[];let q;
+  while((q=re2.exec(body)))m2.push({n:+D2A(q[1]),i:q.index,e:re2.lastIndex});
+  if(m2.length>=2){
+   const it2=m2.map((mk,k)=>({n:mk.n,t:clean(body.slice(mk.e,k+1<m2.length?m2[k+1].i:body.length))}));
+   const byNum=it2.filter(x=>job.idx.includes(x.n-1)).map(x=>({idx:x.n-1,t:x.t}));
+   if(byNum.length===it2.length&&byNum.length>=Math.min(2,job.idx.length))return {list:byNum,found:marks.length};
+   if(it2.length===job.idx.length)return {list:it2.map((x,k)=>({idx:job.idx[k],t:x.t})),found:marks.length};
+  }
+ }
+ const unm=x=>clean(x.replace(/^\s*\\?[\[【]\s*\**\s*[0-9০-৯]+\s*\**\s*\\?[\]】]\s*/,'').replace(/^\s*(?:\*\*)?[0-9০-৯]+[.)]\s*/,''));
+ const blocks=body.split(/\n\s*\n/).map(unm).filter(Boolean);
  if(blocks.length===job.idx.length)return {list:blocks.map((t,k)=>({idx:job.idx[k],t})),found:marks.length};
+ const lines1=body.split(/\n+/).map(unm).filter(Boolean);
+ if(lines1.length===job.idx.length)return {list:lines1.map((t,k)=>({idx:job.idx[k],t})),found:marks.length};
  return {list:[],found:marks.length,blocks:blocks.length};
 }
 function applyGpt(txt,auto){
@@ -1805,10 +1839,10 @@ function applyGpt(txt,auto){
  const body=cutAt!==undefined?txt.slice(0,cutAt):txt;
  const termsT=iT>=0?txt.slice(iT,iP>iT?iP:undefined).replace(/^[^:]*:/,''):'';
  const profT=iP>=0?txt.slice(iP,iT>iP?iT:undefined).replace(/^[^:]*:/,'').replace(/[*]+/g,'').trim():'';
- const pi=parseItems(body,gptJob);let ok=0;const saved=[];
+ const pi=parseItems(body,gptJob);let ok=0;const saved=[],lkP=[];
  pi.list.forEach(({idx,t})=>{
   const tt=t?restoreLoose(t,gptJob.flat||[]):t;
-  if(tt&&gptJob.snap[idx]!==undefined&&(force||(bn(tt)>0&&bn(tt)>=lat(tt)*0.3))){pset('mp:'+hk(gptJob.snap[idx]),tt);saved.push(tt);ok++}
+  if(tt&&gptJob.snap[idx]!==undefined&&(force||(bn(tt)>0&&bn(tt)>=lat(tt)*0.3))){{const hh=hk(gptJob.snap[idx]);pset('mp:'+hh,tt);lkP.push(pget('lk:'+hh).then(l=>{if(l&&l.t&&!l.mine)pset('lk:'+hh,null)}).catch(()=>{}))}saved.push(tt);ok++}
  });
  if(ok){
   if(gptJob.key!=null&&gptJob.pos!=null)plDelete(gptJob.key,gptJob.pos);
@@ -1822,7 +1856,10 @@ function applyGpt(txt,auto){
   glRe=null;if(key)kvSet('bc:'+key,bookCtx);
  }
  if(!ok){
-  const raw=restoreLoose(body.trim(),gptJob.flat||[]);
+  const raw0=restoreLoose(body.trim(),gptJob.flat||[]);
+  const nl0=[...raw0.matchAll(/^[ \t>*#-]*\**\s*([0-9০-৯]+)\s*[.)]\s*\**[ \t]*/gm)].map(x=>+D2A(x[1]));
+  const seq0=nl0.length>=2&&nl0.every((v,i)=>v===nl0[0]+i);
+  const raw=(seq0?raw0.replace(/^[ \t>*#-]*\**\s*[0-9০-৯]+\s*[.)]\s*\**[ \t]*/gm,''):raw0).replace(/^[ \t>*#-]*\**\s*\\?[\[【]\s*\**\s*[0-9০-৯]+\s*\**\s*\\?[\]】][ \t*]*/gm,'');
   if(raw.trim()&&gptJob.key&&(force||(raw.length>=20&&bn(raw)>0&&bn(raw)>=lat(raw)*0.3))){
    pset('pgmp:'+gptJob.key+':'+gptJob.pos,raw);
    const same=gptJob.key===key&&gptJob.pos===pos;
@@ -1836,7 +1873,7 @@ function applyGpt(txt,auto){
  }
  gptJob=null;gbar(false);sheet.style.display='none';
  toast('✅ ChatGPT-র '+ok+'টি অনুবাদ সেভ হয়েছে। বাকি থাকলে 💬 আবার চাপুন',5000);
- if(book)translateAll();
+ Promise.all(lkP).then(()=>{if(book)translateAll()});
  return true;
 }
 async function tryClip(auto){
@@ -1892,12 +1929,13 @@ $('#selbtn').onclick=async()=>{
  toast(pre?'ChatGPT খুলছে, প্রশ্ন বসানো থাকবে। উত্তর কপি করে ফিরে আসুন।':(copied?'প্রশ্ন কপি হয়েছে। ChatGPT-তে পেস্ট করে পাঠান।':'অটো কপি হয়নি'),6000);
 };
 $('#gx').onclick=()=>{gptJob=null;gbar(false)};
-const clipAuto=()=>{if(document.visibilityState==='visible'&&gptJob){tryClip(true);setTimeout(()=>{if(gptJob)tryClip(true)},900)}};
+const clipAuto=()=>{if(document.visibilityState==='visible'&&gptJob){tryClip(true);[900,2200,4500].forEach(ms=>setTimeout(()=>{if(gptJob)tryClip(true)},ms))}};
+let lastTap=0;document.addEventListener('pointerdown',()=>{if(gptJob&&Date.now()-lastTap>2500){lastTap=Date.now();tryClip(true)}},{passive:true,capture:true});
 document.addEventListener('visibilitychange',clipAuto);
 addEventListener('focus',()=>{if(gptJob)tryClip(true)});
 $('#bGpt').onclick=async()=>{
  if(!book||!paras.length){toast('আগে একটা বই খুলুন');return}
- const g=await nextGroup();
+ const g=await nextGroup(true);
  if(!g){toast('✅ এই পাতার সব অংশ ChatGPT-র অনুবাদে আছে');return}
  const txt=chatPrompt(g.idx);
  gptJob={snap:paras.slice(),idx:g.idx.slice(),flat:chatFlat,pos:pos,key:key};
@@ -2054,7 +2092,7 @@ $('#bGl').onclick=()=>{
 +'<input class="gi" id="oak2" type="password" placeholder="বিকল্প সার্ভিসের API key" autocomplete="off">'
 +'<button id="g2s">🔎 মডেল খুঁজুন</button><div id="g2l" style="font-size:13px;margin-bottom:6px"></div>'
 +'<button id="g2t">🔌 বিকল্প AI পরীক্ষা</button><div id="g2m" style="font-size:13px;margin-top:4px;white-space:pre-wrap"></div>'
-+'<div style="margin-top:10px"><b>⚖ সীমা ও রিব্যালেন্সিং</b><br><label style="display:block;margin:4px 0"><input type="checkbox" id="lmon"> <b>সীমা মেনে চলা চালু</b> (বন্ধ থাকলে অ্যাপ কোনো অপেক্ষা ছাড়া সরাসরি পাঠায়; Gemini ব্যর্থ বা কোটা শেষ হলে তবুও Groq-এ চলে যায়। দরকার হলে চালু করুন)</label><br><span style="font-size:13px;color:var(--mut)">অ্যাপ Gemini-কে আগে ব্যবহার করে। সীমা ভরে গেলে বা ব্যর্থ হলে কাজ নিজে থেকে Groq-এ চলে যায়, আর অনুরোধ সীমার ভেতরে রেখে ধীরে ধীরে পাঠায় যাতে থেমে না যায়। এখন যে পাতা পড়ছেন সেটা সবার আগে। আগামী পাতা ও অধ্যায় জব পরে, তাদের জন্য দিনের সীমার ৩০% রাখা থাকে।<br>Groq gpt-oss-120b-র সীমা অফিসিয়াল ডক্সে যাচাই করা (৩০ RPM, ১০০০ RPD, ৮K TPM, ২০০K TPD)। Gemini-র ফ্রি সীমা Google আর নির্দিষ্ট করে প্রকাশ করে না, AI Studio-তে নিজের সংখ্যা দেখে নিচের ঘরে বসান। দৈনিক সীমায় আটকালে অ্যাপ নিজে সংখ্যাটা শিখে নেয়।</span></div>'
++'<div style="margin-top:10px"><b>⚖ সীমা ও রিব্যালেন্সিং</b><br><label style="display:block;margin:4px 0"><input type="checkbox" id="lmon"> <b>সীমা মেনে চলা চালু</b> (বন্ধ থাকলে অ্যাপ কোনো অপেক্ষা ছাড়া সরাসরি পাঠায়; Gemini ব্যর্থ বা কোটা শেষ হলে তবুও Groq-এ চলে যায়। দরকার হলে চালু করুন)</label><label style="display:block;margin:4px 0"><input type="checkbox" id="lmsp"> <b>কাজ ভাগ করে দেওয়া:</b> কঠিন অনুচ্ছেদ Gemini-তে, সহজ অনুচ্ছেদ Groq-তে (Gemini না থাকলে বা তার সীমা শেষ হলে সব কাজ আগের মতোই Groq করবে)</label><br><span style="font-size:13px;color:var(--mut)">অ্যাপ Gemini-কে আগে ব্যবহার করে। সীমা ভরে গেলে বা ব্যর্থ হলে কাজ নিজে থেকে Groq-এ চলে যায়, আর অনুরোধ সীমার ভেতরে রেখে ধীরে ধীরে পাঠায় যাতে থেমে না যায়। এখন যে পাতা পড়ছেন সেটা সবার আগে। আগামী পাতা ও অধ্যায় জব পরে, তাদের জন্য দিনের সীমার ৩০% রাখা থাকে।<br>Groq gpt-oss-120b-র সীমা অফিসিয়াল ডক্সে যাচাই করা (৩০ RPM, ১০০০ RPD, ৮K TPM, ২০০K TPD)। Gemini-র ফ্রি সীমা Google আর নির্দিষ্ট করে প্রকাশ করে না, AI Studio-তে নিজের সংখ্যা দেখে নিচের ঘরে বসান। দৈনিক সীমায় আটকালে অ্যাপ নিজে সংখ্যাটা শিখে নেয়।</span></div>'
 +'<div style="font-size:13px;margin-top:4px"><b>Gemini</b> প্রতি মিনিটে অনুরোধ <input class="gi" id="lm_g_rpm" type="number" style="width:70px;display:inline-block"> টোকেন <input class="gi" id="lm_g_tpm" type="number" style="width:100px;display:inline-block"> দিনে অনুরোধ <input class="gi" id="lm_g_rpd" type="number" style="width:70px;display:inline-block"></div>'
 +'<div style="font-size:13px;margin-top:4px"><b>Groq</b> প্রতি মিনিটে অনুরোধ <input class="gi" id="lm_r_rpm" type="number" style="width:70px;display:inline-block"> টোকেন <input class="gi" id="lm_r_tpm" type="number" style="width:80px;display:inline-block"> দিনে অনুরোধ <input class="gi" id="lm_r_rpd" type="number" style="width:70px;display:inline-block"> দিনে টোকেন <input class="gi" id="lm_r_tpd" type="number" style="width:90px;display:inline-block"> প্রতি অনুরোধে সর্বোচ্চ অক্ষর <input class="gi" id="lm_r_b" type="number" style="width:80px;display:inline-block"></div>'
 +'<button id="lmz">আজকের গণনা শূন্য করুন</button><div id="lmm" style="font-size:13px;margin-top:4px"></div>'
@@ -2118,7 +2156,7 @@ $('#bGl').onclick=()=>{
     o.querySelectorAll('a[data-m]').forEach(a=>a.onclick=e=>{e.preventDefault();$('#oam2').value=a.dataset.m});
    }catch(e){o.textContent='❌ '+(e.status===401||e.status===403?'key ঠিক নেই ('+e.status+')':(e.message||e))}
   };
-  $('#lmon').checked=LMON;
+  $('#lmon').checked=LMON;$('#lmsp').checked=LMSP;
   {const F=[['lm_g_rpm','gem','rpm'],['lm_g_tpm','gem','tpm'],['lm_g_rpd','gem','rpd'],['lm_r_rpm','gro','rpm'],['lm_r_tpm','gro','tpm'],['lm_r_rpd','gro','rpd'],['lm_r_tpd','gro','tpd'],['lm_r_b','gro','batch']];
   F.forEach(([id,P,k])=>{$('#'+id).value=LM[P][k]||''});
   $('#lmz').onclick=()=>{LC={};ls.set('lmc','{}');showMeter();$('#lmm').textContent='আজকের গণনা শূন্য হয়েছে'};
@@ -2185,7 +2223,7 @@ $('#bGl').onclick=()=>{
   gk=$('#gk').value.trim();gm=$('#gm').value.trim()||'gemini-3.5-flash';pe=$('#pe').checked;noEn=$('#ne').checked;useLearned=$('#ul').checked;ls.set('ul',useLearned?'1':'0');glRe=null;ls.set('ne',noEn?'1':'0');qUntil=0;ls.set('qu','0');bo=$('#bo').checked;br=$('#br').checked;ls.set('bo',bo?'1':'0');ls.set('br',br?'1':'0');gOn=$('#gon').checked;ls.set('pe',pe?'1':'0');ls.set('gon',gOn?'1':'0');gtp=$('#gtp').value.trim();ak=$('#ak').value.trim();cm=$('#cm').value.trim()||'claude-haiku-5-5';gp=$('#gp').value;reg=$('#reg').value;ls.set('ak',ak);ls.set('cm',cm);ls.set('gp',gp);ls.set('reg',reg);ls.set('gmode',$('#gmode').value);ls.set('gcl',$('#gcl').value.trim());cust=$('#cust').value;ls.set('cust',cust);hyPct=+$('#hyp').value;ls.set('hyp',String(hyPct));glu=$('#glu').value.trim();ls.set('glu',glu);ls.set('gscope',$('#gscope').value);ls.set('gshort',$('#gsh').checked?'1':'0');ls.set('custs',$('#custs').value);hy=$('#hy').value==='1';ls.set('hy',hy?'1':'0');oaK=$('#oak').value.trim();oaU=$('#oau').value.trim()||'https://api.openai.com/v1';oaM=$('#oam').value.trim();ls.set('oak',oaK);ls.set('oau',oaU);ls.set('oam',oaM);
   saveGl();ls.set('gk',gk);ls.set('gm2',gm);ls.set('gtp',gtp);
   g2=$('#g2on').checked;oaU2=$('#oau2').value.trim()||'https://api.groq.com/openai/v1';oaM2=$('#oam2').value.trim();oaK2=$('#oak2').value.trim();qUntil2=0;
-  [['lm_g_rpm','gem','rpm'],['lm_g_tpm','gem','tpm'],['lm_g_rpd','gem','rpd'],['lm_r_rpm','gro','rpm'],['lm_r_tpm','gro','tpm'],['lm_r_rpd','gro','rpd'],['lm_r_tpd','gro','tpd'],['lm_r_b','gro','batch']].forEach(([id,P,k])=>{const v=+$('#'+id).value;if(v>0)LM[P][k]=v});saveLM();LMON=$('#lmon').checked;ls.set('lmon',LMON?'1':'0');glAuto2=$('#glauto2').checked;ls.set('glauto2',glAuto2?'1':'0');if($('#glrev')){glRev=$('#glrev').checked;ls.set('glrev',glRev?'1':'0')}
+  [['lm_g_rpm','gem','rpm'],['lm_g_tpm','gem','tpm'],['lm_g_rpd','gem','rpd'],['lm_r_rpm','gro','rpm'],['lm_r_tpm','gro','tpm'],['lm_r_rpd','gro','rpd'],['lm_r_tpd','gro','tpd'],['lm_r_b','gro','batch']].forEach(([id,P,k])=>{const v=+$('#'+id).value;if(v>0)LM[P][k]=v});saveLM();LMON=$('#lmon').checked;ls.set('lmon',LMON?'1':'0');LMSP=$('#lmsp').checked;ls.set('lmsp',LMSP?'1':'0');glAuto2=$('#glauto2').checked;ls.set('glauto2',glAuto2?'1':'0');if($('#glrev')){glRev=$('#glrev').checked;ls.set('glrev',glRev?'1':'0')}
   gauto=$('#gauto').checked;ls.set('gauto',gauto?'1':'0');LKM=$('#lkm').value;ls.set('lkm',LKM);VERIFY=$('#vfy').checked;ls.set('vfy',VERIFY?'1':'0');ocrUn=$('#ocru').value;ls.set('ocru',ocrUn);ocrThr=+$('#ocrt').value||60;ls.set('ocrt',String(ocrThr));RECUT=$('#recut').checked;ls.set('recut',RECUT?'1':'0');WMAP=+$('#wmap').value||8;ls.set('wmap',String(WMAP));ocrOn=$('#ocron').checked;ocrLang=$('#ocrl').value;ls.set('ocr',ocrOn?'1':'0');ls.set('ocrl',ocrLang);if(gauto)autoModels(true);
   ls.set('g2',g2?'1':'0');ls.set('oau2',oaU2);ls.set('oam2',oaM2);ls.set('oak2',oaK2);ls.set('qu2','0');
   sheet.style.display='none';toast(llmOn()?'সেভ হয়েছে, AI চালু':'সেভ হয়েছে');
@@ -2558,7 +2596,7 @@ async function openPM(b){
  sheet.style.display='flex';
  out.innerHTML=`<b>অনুচ্ছেদ-মেনু</b> ${lk&&lk.t?'🔒 লক ':''}${vf?'✔ যাচাই ':''}
  <div style="font-size:12px;color:var(--mut);margin:4px 0">যন্ত্র-অনুবাদ মানুষের যাচাইয়ের বিকল্প নয়। গুরুত্বপূর্ণ জায়গায় মূল লেখা মিলিয়ে নিন।</div>
- <div class="tg"><button class="p" id="pai">🤖 শুধু এই অনুচ্ছেদ AI-তে পাঠান</button><button id="pvf">${vf?'✔ যাচাই তুলে নিন':'✔ যাচাই করেছি'}</button><button id="plk">${lk&&lk.t?'🔓 লক খুলুন':'🔒 এই অনুবাদ লক করুন'}</button><button id="ped">✏️ নিজে সম্পাদনা</button><button id="pre">🔁 শুধু এই অনুচ্ছেদ আবার (সাধারণ নিয়মে — সহজ হলে Google-ই থাকে)</button><button id="pcm">⚖ তিন সংস্করণ তুলনা</button><button id="pgg">🌐 Google সংস্করণ লক করুন (সম্পূর্ণ)</button><button id="pvx" style="display:none">✅ যাচাইকারীর সংশোধিত অনুবাদ নিন</button><button id="pcp">📋 অনুবাদ কপি</button></div><div id="pbx" style="margin-top:8px"></div>`;
+ <div class="tg"><button class="p" id="pai">🤖 শুধু এই অনুচ্ছেদ AI-তে পাঠান</button><button class="p" id="pgt">💬 শুধু এই অনুচ্ছেদ ChatGPT-তে পাঠান</button><button id="pvf">${vf?'✔ যাচাই তুলে নিন':'✔ যাচাই করেছি'}</button><button id="plk">${lk&&lk.t?'🔓 লক খুলুন':'🔒 এই অনুবাদ লক করুন'}</button><button id="ped">✏️ নিজে সম্পাদনা</button><button id="pre">🔁 শুধু এই অনুচ্ছেদ আবার (সাধারণ নিয়মে — সহজ হলে Google-ই থাকে)</button><button id="pcm">⚖ তিন সংস্করণ তুলনা</button><button id="pgg">🌐 Google সংস্করণ লক করুন (সম্পূর্ণ)</button><button id="pvx" style="display:none">✅ যাচাইকারীর সংশোধিত অনুবাদ নিন</button><button id="pcp">📋 অনুবাদ কপি</button></div><div id="pbx" style="margin-top:8px"></div>`;
  $('#pvf').onclick=async()=>{pset('vf:'+h,vf?null:{t:Date.now()});await sleepMs(30);updChip(b);openPM(b)};
  $('#plk').onclick=async()=>{
   if(lk&&lk.t){pset('lk:'+h,null)}else{const t=curText(b);if(!t){toast('আগে অনুবাদ আসতে দিন');return}pset('lk:'+h,{t,mine:false});pset('vf:'+h,{t:Date.now()})}
@@ -2570,6 +2608,18 @@ async function openPM(b){
   $('#pes').onclick=()=>{const t=$('#pet').value.trim();if(!t)return;pset('lk:'+h,{t,mine:true});pset('vf:'+h,{t:Date.now()});applyText(b,t);refreshPageLock();sheet.style.display='none';toast('✅ আপনার সম্পাদনা লক ও যাচাই হয়েছে')};
  };
  $('#pai').onclick=()=>forceAI(b,para,h,lk);
+ $('#pgt').onclick=async()=>{
+  const k=[...view.querySelectorAll('.blk')].indexOf(b);
+  if(k<0||paras[k]===undefined){toast('অনুচ্ছেদটা খুঁজে পাইনি');return}
+  const txt=chatPrompt([k]);
+  gptJob={snap:paras.slice(),idx:[k],flat:chatFlat,pos:pos,key:key};
+  const copied=await copyText(txt);lastPrompt=txt;
+  const pre=openChat(txt,ls.get('gmode')||'web');
+  sheet.style.display='none';
+  if(!copied)showPromptBox(txt);
+  gbar(true);
+  toast(pre?'ChatGPT খুলছে, প্রম্পট বসানো থাকবে। না থাকলে পেস্ট করুন।':(copied?'প্রম্পট কপি হয়েছে। ChatGPT না খুললে ওপরের 📱/🌐 বোতাম চাপুন, তারপর Paste করে পাঠান।':'অটো কপি হয়নি, নিচের ঘরে ম্যানুয়ালি করুন।'),6000);
+ };
  $('#pre').onclick=()=>{
   if(lk&&lk.t){toast('এটা লক করা, আগে লক খুলুন');return}
   const k=pk(para),k2='mp:'+hk(para);pmem.delete(k);kvDel(k);pmem.delete(k2);kvDel(k2);
