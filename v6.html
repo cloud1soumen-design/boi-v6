@@ -1658,7 +1658,7 @@ $('#bAuto').textContent='⇄ অনুবাদ '+(auto?'চালু':'বন�
 $('#bTerm').onclick=()=>run(()=>termList(paras.join('\n').slice(0,8000)));
 const NOADD='IMPORTANT: Translate each paragraph exactly the way it is written, keeping its own structure and line breaks. Do NOT add anything of your own: no numbering (1 2 3), no bullet points, no headings, no summary, no notes, no explanations, no terms list, no extra lines before or after. The only extra text allowed is the [n] marker at the start of each paragraph, exactly as given.';
 const NOADD1='IMPORTANT: Translate the paragraph exactly the way it is written, keeping its own structure and line breaks. Do NOT add anything of your own: no numbering (1 2 3), no bullet points, no headings, no summary, no notes, no explanations, no terms list, no extra lines before or after, no marker. Write only the Bangla translation of this one paragraph.';
-const NOADDN=n=>'IMPORTANT: Reply with ONLY the Bangla translation: exactly '+n+' paragraph(s), in the same order and in the same layout as the source, separated by one blank line. Do not add numbers (1 2 3), markers, bullet points, headings, notes, explanations, a terms list or anything of your own, and never merge or split paragraphs.';
+const NOADDN=n=>'IMPORTANT: Reply with ONLY the Bangla translation: exactly '+n+' paragraph(s), in the same order and in the same layout as the source, separated by one blank line. Do not add numbers (1 2 3), markers, bullet points, headings, notes, explanations or anything of your own inside or between the paragraphs, and never merge or split paragraphs. Only after the last paragraph, add a separate line "TERMS:" followed by up to 10 key technical terms from this text, one per line as "english = Bangla word you used (or KEEP_EN)"'+(bookCtx.profile?'':' and then a final line "PROFILE:" with 2 sentences on the book\'s subject and tone')+'.';
 let chatFlat=[];
 function chatPrompt(idx){
  // ChatGPT-র জন্য সংকেত (⟦G0⟧) নয়: সাধারণ মূল লেখা + শব্দকোষের শব্দের আলাদা তালিকা
@@ -1983,23 +1983,30 @@ async function lockPageCore(k0,p,ps,hs,want){
 }
 const prePtr=()=>{const v=+ls.get('pn:'+key);return Number.isFinite(v)&&v>0&&v<total?v:0};
 async function preAI(i0){
- const pp=$('#pp')||document.createElement('div');preStop=false;let i=i0||0;
+ const pp=$('#pp')||document.createElement('div');preStop=false;let i=i0||0,hole=-1,holeN=0;
+ const unl=async q=>{const hh=hk(q),au=await pget('au:'+hh);return !((au&&au.h!=null)||(await pget('lk:'+hh))||(await pget('mp:'+hh))!=null)};
  while(i<total&&!preStop){
   const pend=[],pgs=[];let n=0,j=i;
    while(j<total&&n<8000&&j<i+12){let ps;try{ps=await book.get(j)}catch(e){ps=[]}pgs.push({p:j,ps});pend.push(...ps);n+=ps.join('').length;j++}
   pp.textContent='AI অনুবাদ হচ্ছে… পাতা '+(i+1)+'–'+j+' / '+total;preUi('⬇ AI অনুবাদ… পাতা '+(i+1)+'–'+j+'/'+total,Math.round(j/total*100));ls.set('pre:'+key,String(i));
   const c0=aiCalls;
   try{
-   const o=await gemTr(pend,9000,2);
-    for(const pg of pgs){try{await lockPageCore(key,pg.p,pg.ps,pg.ps.map(()=>''),new Set(pg.ps.map((_,k)=>k)))}catch(e){}}
+   const need=[];for(const q of pend){if(await unl(q))need.push(q)}
+   const o=await gemTr(need,9000,2);
+    for(const pg of pgs){try{
+     const all=new Set(pg.ps.map((_,k)=>k)),emp=pg.ps.map(()=>'');
+     let pn=await lockPageCore(key,pg.p,pg.ps,emp,all);
+     if(pn){const mis=[];for(const q of pg.ps){if(await unl(q))mis.push(q)}try{await gemTr(mis,9000,2)}catch(e2){}pn=await lockPageCore(key,pg.p,pg.ps,emp,all)}
+     if(pn){holeN+=pn;if(hole<0||pg.p<hole)hole=pg.p}
+    }catch(e){}}
     try{await prefetchWords(o.filter(x=>x))}catch(e){}
    try{const ew=[...new Set(pend.filter(p=>lat(p)>bn(p)).flatMap(p=>contentWords(p).map(w=>w.toLowerCase())))];if(ew.length)await bnOf(ew)}catch(e){}
   }catch(e){pp.textContent=gerr(e).replace(' এখন Google Translate চলছে।','').replace(' Google Translate দিয়ে চলছে।','')+' পাতা '+i+' পর্যন্ত জমা হয়েছে। কোটা ফিরলে বা নেট এলে নিজে থেকেই এখান থেকে এগোবে (অ্যাপ খোলা রাখুন)।';if(e.status===429||isRetryErr(e)){cjSet({from:i0||0,to:total-1,next:i})}return}
-  i=j;ls.set('pn:'+key,String(i));
+  i=j;ls.set('pn:'+key,String(hole>=0?hole:i));
    if(aiCalls>c0)await new Promise(r=>setTimeout(r,gp==='gemini'?5000:1500));
   }
-  if(!preStop){ls.set('preon:'+key,'0');ls.set('pre:'+key,'0');ls.set('pn:'+key,'0')}
- pp.textContent=preStop?'থামানো হয়েছে। পরে আবার চালাতে পারবেন।':'✅ পুরো বই AI দিয়ে অনুবাদ হয়ে জমা হয়েছে। এখন ইন্টারনেট ছাড়াই পড়তে পারবেন।';
+  if(!preStop&&hole<0){ls.set('preon:'+key,'0');ls.set('pre:'+key,'0');ls.set('pn:'+key,'0')}
+ pp.textContent=preStop?'থামানো হয়েছে। পরে আবার চালাতে পারবেন।':(hole>=0?'⚠ পাতা '+(hole+1)+' থেকে '+holeN+'টি অনুচ্ছেদে AI অনুবাদ আসেনি, তাই সেগুলো লক হয়নি। আবার চালালে ঠিক ওই পাতা থেকে শুরু হবে।':'✅ পুরো বই AI দিয়ে অনুবাদ হয়ে জমা হয়েছে। এখন ইন্টারনেট ছাড়াই পড়তে পারবেন।');
 }
 async function preRun(){
  if(preBusy){toast('আগে থেকেই চলছে — ওপরের লাইনে দেখুন');return}
@@ -2037,7 +2044,7 @@ async function preRunInner(i0){
   pp.textContent='অনুবাদ হচ্ছে… পাতা '+(i+1)+' / '+total;preUi('⬇ অফলাইনের জন্য অনুবাদ হচ্ছে… পাতা '+(i+1)+'/'+total,Math.round((i+1)/total*100));ls.set('pre:'+key,String(i));
   let ps;try{ps=await book.get(i)}catch(e){continue}
   const seen=new Set(),nf=netFail,lockedK=new Set();
-  for(let k=0;k<ps.length;k++){const a=await pget('au:'+hk(ps[k]));if(a&&a.h!=null)lockedK.add(k)}
+  for(let k=0;k<ps.length;k++){const a=await pget('au:'+hk(ps[k]));if(a&&a.h!=null)lockedK.add(k);else if((await pget('lk:'+hk(ps[k])))||(await pget('mp:'+hk(ps[k])))!=null)lockedK.add(k)}
   if(ps.length&&lockedK.size===ps.length){lastDone=i+1;if(!pendP.length)ls.set('pn:'+k0,String(i+1));continue}
   const hs=await pool(ps,async p=>{const a=await pget('au:'+hk(p));if(a&&a.h!=null)return a.h;try{return await trPara(p,seen)}catch(e){return ''}},2);
   const want=new Set();
@@ -2905,14 +2912,15 @@ async function aheadPump(){
   setAh('⏩ আগে থেকে তৈরি হচ্ছে: পাতা '+(p+1)+' (পরের '+N+' পাতার মধ্যে)');
   let ps=[];try{ps=await book.get(p)}catch(e){}
   if(my!==aheadTok)return;
-   const lockedK=new Set();for(let k=0;k<ps.length;k++){const a=await pget('au:'+hk(ps[k]));if(a&&a.h!=null)lockedK.add(k)}
+   const lockedK=new Set();for(let k=0;k<ps.length;k++){const a=await pget('au:'+hk(ps[k]));if(a&&a.h!=null)lockedK.add(k);else if((await pget('lk:'+hk(ps[k])))||(await pget('mp:'+hk(ps[k])))!=null)lockedK.add(k)}
    const hs=await pool(ps,async q=>{const a=await pget('au:'+hk(q));if(a&&a.h!=null)return a.h;return trPara(q,new Set()).catch(()=>'')},2);
    if(my!==aheadTok)return;
-   const wantAI=new Set();
-   if(RS.aheadAI!==false&&llmOn()&&ps.length){
-    if(hy)hardSel(ps.map((q,k)=>({q,k,s:hardScore(q,hs[k]||'')})).filter(x=>!lockedK.has(x.k)),hyPct).forEach(x=>wantAI.add(x.k));
-    else ps.forEach((q,k)=>{if(!lockedK.has(k))wantAI.add(k)});
+   const wantAI=new Set(),cand=new Set();
+   if(ps.length){
+    if(hy)hardSel(ps.map((q,k)=>({q,k,s:hardScore(q,hs[k]||'')})).filter(x=>!lockedK.has(x.k)),hyPct).forEach(x=>cand.add(x.k));
+    else ps.forEach((q,k)=>{if(!lockedK.has(k))cand.add(k)});
    }
+   if(RS.aheadAI!==false&&llmOn()&&ps.length)cand.forEach(k=>wantAI.add(k));
    if(wantAI.size){
     try{const c0=aiCalls;await gemTr([...wantAI].map(k=>ps[k]),3500,1);if(aiCalls>c0)await sleepMs(gp==='gemini'?5000:1200)}
     catch(e){if(!isRetryErr(e)&&!e.rl)wantAI.clear()}
@@ -2933,9 +2941,11 @@ async function aheadPump(){
      pset('au:'+hh,{h:a!=null?esc(a):hs[k],ai:a!=null,gv:gver,at:Date.now()});
     }
    }
-   if(LKM==='two'&&pend&&ps.length&&key===k0&&RS.autolock!==false&&hs.every(x=>x))await autoLockAhead(k0,p,ps,hs,pendS);
+   const upS=new Set(pendS);
+   if(LKM==='two'&&gOn&&aiKey())for(const k of cand){if(!lockedK.has(k)&&await pget(pk(ps[k]))==null)upS.add(k)}
+   if(LKM==='two'&&pend&&ps.length&&key===k0&&RS.autolock!==false&&hs.every(x=>x))await autoLockAhead(k0,p,ps,hs,upS);
    if(pend){aheadPend=true;setAh('⏳ পাতা '+(p+1)+': '+(ps.length-pend)+'/'+ps.length+' অনুচ্ছেদ লক, বাকিটা নিজে থেকে আবার চেষ্টা হবে');break}
-   if(RS.autolock!==false&&ps.length&&key===k0&&hs.every(x=>x))await autoLockAhead(k0,p,ps,hs);
+   if(RS.autolock!==false&&ps.length&&key===k0&&hs.every(x=>x))await autoLockAhead(k0,p,ps,hs,upS);
    aheadDone[key+':'+p]=true;lastDone=p;
  }
  if(my===aheadTok&&!aheadPend)aheadN=0;
